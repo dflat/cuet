@@ -1,6 +1,8 @@
 import time
 import sys
  
+import numpy as np
+from fit_curve import piecewise3poly
 import pygame
 from pygame.locals import *
 
@@ -33,7 +35,7 @@ class Window:
 
   @property
   def bot(self):
-    return self.top + self.h
+    return self.top + self.h - 1
   
   def draw(self, surf):
     self.surf.fill(self.bg)
@@ -66,13 +68,40 @@ class GraphWindow(Window):
     n = game.recorder.n
     prev = None
     for i, sample in enumerate(game.recorder.samples):
-      color = DARK_BG.lerp(WHITE, .5)
-      cx = self.left + (i/(n-1))*self.w
-      cy = self.bot - sample*self.h
-      pygame.draw.circle(surf, color, (cx,cy), 2)
+      color = DARK_BG.lerp(WHITE, .3)
+      cx = self.left + (i/(n-1))*self.w 
+      cy = self.bot - 1 - sample*(self.h-3)
+      #pygame.draw.circle(surf, color, (cx,cy), 1)
       if i > 0:
         pygame.draw.aaline(surf, color, prev_point, (cx,cy),1)
       prev_point = (cx, cy)
+
+    # draw smoothed fit curve 
+    smoothed = game.recorder.smoothed
+    n = len(smoothed)
+    color = DARK_BG.lerp(WHITE, .5)
+    for i, sample in enumerate(smoothed):
+      cx = self.left + (i/(n-1))*self.w
+      cy = self.bot - 1 - sample*(self.h-3)
+      #pygame.draw.circle(surf, color, (cx,cy), 1)
+      if i > 0:
+        lw = 3
+        #pygame.draw.line(surf, color, prev_point, (cx,cy),lw)
+        #pygame.draw.aaline(surf, color, prev_point, (cx,cy))
+        pygame.draw.aaline(surf, color, prev_point, (cx,cy))
+      prev_point = (cx, cy)
+
+    if game.recorder.playing:
+      self.draw_cursor(surf, self.left + game.recorder.playback_progress*self.w)
+
+  def draw_cursor(self, surf, x):
+      color = DARK_BG_OUTLINE
+      width = 2
+      pygame.draw.line(surf, color, (x,self.top), (x, self.top + self.h), width)
+      pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x + width,self.top), (x + width, self.top + self.h), width)
+      pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x - width,self.top), (x - width, self.top + self.h), width)
+
+
 
 class HoverWindow(Window):
   def __init__(self, *args, **kwargs):
@@ -175,6 +204,8 @@ class Game:
     self.pointer = Pointer(self)
     self.recorder = Recorder(self)
 
+    self.recorder.register_listener(Listener(lambda val: setattr(right_window,'bg', DARK_BG.lerp(WHITE, val))))
+
   def draw(self):
     self.screen.fill(BLACK)
 
@@ -192,6 +223,8 @@ class Game:
       elif event.type == pygame.KEYDOWN:
           if event.key == pygame.K_r:
             game.recorder.start()
+          if event.key == pygame.K_p:
+            game.recorder.start_playback()
 
     self.pointer.report()
     self.recorder.update(dt)
@@ -203,16 +236,35 @@ class Game:
       self.draw()
       self.dt = self.clock.tick(self.FPS)
 
+class Listener:
+  def __init__(self, set_attr_func, mn=0, mx=1):
+    self.set_attr_func = set_attr_func
+    self.mn = mn
+    self.mx = mx
+
+  def notify(self, val):
+    self.set_attr_func(lerp(val, self.mn, self.mx))
+
 class Recorder:
   def __init__(self, game):
     self.game = game
     self.sr = 24 # samples per second
-    self.dur = 3 # capture seconds
+    self.dur = 5 # capture seconds
     self.T = 1/self.sr # period in seconds
     self.n = int(self.sr*self.dur)
     self.samples = []
+    self.smoothed = []
+    self.poly = None
     self.live = False
 
+    self.playing = False
+    self.playback_progress = 0
+    #self.playback_sr = 60
+    #self.playback_T = 1/self.playback_t0
+    #self.playback_n = int(self.playback_sr*self.dur)
+    self.playback_val = 0
+
+    self.listeners = [] # driveable parameters registered to respond to playback
 
   def update(self, dt): # dt in ms
     if self.live:
@@ -221,6 +273,20 @@ class Recorder:
       if elapsed >= self.T*self.i:
         self.sample()
 
+    elif self.playing:
+      t = time.time()
+      elapsed = t-self.playback_t0
+      self.playback_progress = clamp((elapsed/self.dur),0,1)
+      playback_index = int(self.playback_progress*(len(self.smoothed) - 1))
+      self.playback_val = self.smoothed[playback_index]
+      for listener in self.listeners:
+        listener.notify(self.playback_val)
+      if elapsed >= self.dur: 
+        self.end_playback()
+
+  def register_listener(self, listener):
+    self.listeners.append(listener) # todo: switch from list to dictionary / add remove_listener method
+
   def sample(self):
     #print('sample taken')
     T = self.game.pointer.hover_val
@@ -228,18 +294,37 @@ class Recorder:
     #self.game.graph_zone.mark_sample(self.i, self.n)
     self.i += 1
     if self.i == self.n: # finished sampling 
+      self.finish()
+
+  def finish(self):
       self.live = False
       total_elapsed = time.time() - self.t0
       print(self.samples)
       print(f'finished: took {self.n} samples in {total_elapsed} seconds.') 
+      X = np.linspace(0, self.dur, self.n, True)
+      Y = self.samples
+      DOWNSAMPLE = 2#2
+      X = np.r_[X[:-1][::DOWNSAMPLE],X[-1]]
+      Y = np.r_[Y[:-1][::DOWNSAMPLE],Y[-1]]
+      self.poly = piecewise3poly(X,Y)
+      t = np.linspace(0, self.dur, int(self.game.graph_zone.w), False)#False)
+      self.smoothed = [clamp(self.poly(i),0,1) for i in t]
 
   def start(self):
     self.live = True
     self.i = 0
     self.samples = []
+    self.smoothed = []
     self.t0 = time.time()
     self.sample()
     print('started recording')
+
+  def start_playback(self):
+    self.playing = True
+    self.playback_t0 = time.time()
+
+  def end_playback(self):
+    self.playing = False
 
 game = Game()
 game.run()
