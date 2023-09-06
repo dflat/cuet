@@ -7,7 +7,6 @@ def piecewise3poly(X,Y):
 
 	# handle i == [1 ... n-1]
 	for i in range(1,n-1):
-		print(i)
 		x1 = X[i]
 		x2 = x1*x1
 		x3 = x2*x1
@@ -36,9 +35,11 @@ def piecewise3poly(X,Y):
 	A[-2:,-4:] = block_n
 	b[-2:] = [Y[n-1], 0]
 
+	# solve matrix, generate piecewise degree-3 polynomial
 	sol = np.linalg.solve(A,b)
 	polys = get_polys(sol, n-1)
 	piecewise_poly = piece_poly(X, polys)
+
 	return piecewise_poly
 
 def get_polys(X,n):

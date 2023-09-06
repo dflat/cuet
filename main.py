@@ -1,5 +1,6 @@
 import time
 import sys
+import math
  
 import numpy as np
 from fit_curve import piecewise3poly
@@ -12,16 +13,18 @@ PAD = 10
 # COLORS
 BLACK = pygame.Color((0,0,0))
 WHITE = pygame.Color((255,255,255))
-RED  = (255,0,0)
+RED  = pygame.Color((255,0,0))
 BLUE = (0,0,255)
 GREEN = (0,255,0)
 DARK_BG = pygame.Color('#2f3e46')
 DARK_BG_OUTLINE = pygame.Color('#354f52')
 MID = DARK_BG.lerp(DARK_BG_OUTLINE, 0.5)
 
+### Window class hierarchy ###
 class Window:
-  def __init__(self, top, left, w=100, h=100, bg=BLACK, outline_width=0, outline_color=WHITE, parent=None): 
+  def __init__(self, game, top, left, w=100, h=100, bg=BLACK, outline_width=0, outline_color=WHITE, parent=None): 
     self.parent = parent
+    self.game = game
     self.top = top
     self.left = left
     self.w = w
@@ -101,8 +104,6 @@ class GraphWindow(Window):
       pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x + width,self.top), (x + width, self.top + self.h), width)
       pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x - width,self.top), (x - width, self.top + self.h), width)
 
-
-
 class HoverWindow(Window):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
@@ -119,6 +120,24 @@ class HoverWindow(Window):
       pygame.draw.line(surf, color, (x,self.top), (x, self.top + self.h), width)
       pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x + width,self.top), (x + width, self.top + self.h), width)
       pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x - width,self.top), (x - width, self.top + self.h), width)
+
+class LevelWindow(Window):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.sprites = []
+    self.ball = Ball(self, fulcrum=(self.w//2, self.h), arm_radius=self.w//3, ball_radius=12, phase=0.5, color=RED, group=self.sprites)
+    self.game.recorder.register_listener(Listener(lambda val: self.ball.set_pos(val)))
+
+  def draw(self, surf):
+    self.surf.fill(self.bg)
+    self.outline()
+
+    for sprite in self.sprites:
+      sprite.draw(self.surf)
+
+    surf.blit(self.surf, (self.left, self.top))
+
+### end Window class hierarchy ###
 
 class Pointer:
   hover = pygame.cursors.Cursor(pygame.SYSTEM_CURSOR_CROSSHAIR)
@@ -170,6 +189,33 @@ def lerp(t, a, b):
 
 ### end utility funcs ###
 
+### game objects ###
+class Ball:
+  def __init__(self, window, fulcrum, arm_radius, ball_radius=4, phase=0.5, color=WHITE, group=None):
+    if group is not None:
+      group.append(self)
+    self.window = window
+    self.fulcrum = np.array(fulcrum)
+    self.arm = arm_radius
+    self.r = ball_radius
+    self.set_pos(phase)
+    self.color = color
+
+  def set_pos(self, t): # t = [0,1] => [pi,0]
+    self.phi = lerp(t, math.pi, 0) #t*math.pi - math.pi/2
+    self.pos = self.fulcrum + self.arm*np.array((math.cos(self.phi), -math.sin(self.phi))) # negative y-component to flip y-axis
+
+  def update(self, dt):
+    pass
+
+  def draw(self, surf):
+    pygame.draw.circle(surf, self.color.lerp(self.window.bg, .4), self.pos, self.r)
+    pygame.draw.circle(surf, self.color.lerp(self.window.bg, .8), self.pos, self.r,1)
+
+
+
+### end game objects ###
+
 class Game:
 
   def __init__(self):
@@ -184,25 +230,24 @@ class Game:
 
 
     self.screen = pygame.display.set_mode((self.W, self.H))
+    self.recorder = Recorder(self)
 
-    left_window = Window(top = 0, left=0, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
+    left_window = Window(self, top = 0, left=0, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
 
     hover_w, hover_h = left_window.w *0.8, left_window.h*0.2
-    self.hover_zone = HoverWindow(top = left_window.h//2 - hover_h//2, left = (left_window.w - hover_w)//2, w=hover_w, h=hover_h,
+    self.hover_zone = HoverWindow(self, top = left_window.h//2 - hover_h//2, left = (left_window.w - hover_w)//2, w=hover_w, h=hover_h,
                                   bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
     left_window.add_child(self.hover_zone)
 
     graph_w, graph_h = left_window.w *0.8, (left_window.h - self.hover_zone.bot - PAD*2)
-    self.graph_zone = GraphWindow(top = self.hover_zone.bot + PAD, left = self.hover_zone.left, w=graph_w, h=graph_h,
+    self.graph_zone = GraphWindow(self, top = self.hover_zone.bot + PAD, left = self.hover_zone.left, w=graph_w, h=graph_h,
                                   bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
     left_window.add_child(self.graph_zone)
 
-    right_window = Window(top = 0, left=self.W//2, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
-
+    right_window = LevelWindow(self, top = 0, left=self.W//2, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
     self.windows = [left_window, right_window]
 
     self.pointer = Pointer(self)
-    self.recorder = Recorder(self)
 
     self.recorder.register_listener(Listener(lambda val: setattr(right_window,'bg', DARK_BG.lerp(WHITE, val))))
 
@@ -259,17 +304,20 @@ class Recorder:
 
     self.playing = False
     self.playback_progress = 0
-    #self.playback_sr = 60
-    #self.playback_T = 1/self.playback_t0
-    #self.playback_n = int(self.playback_sr*self.dur)
     self.playback_val = 0
 
     self.listeners = [] # driveable parameters registered to respond to playback
+    self.stored_signals = { } # Listener => smoothed_fit_curve (TEST)
+    # TODO: keep an 'active signal' and swap out with others as user clicks through
 
   def update(self, dt): # dt in ms
     if self.live:
       t = time.time()
       elapsed = t-self.t0
+
+      for listener in self.listeners: # testing this here...
+        listener.notify(self.game.pointer.hover_val)
+
       if elapsed >= self.T*self.i:
         self.sample()
 
@@ -288,7 +336,6 @@ class Recorder:
     self.listeners.append(listener) # todo: switch from list to dictionary / add remove_listener method
 
   def sample(self):
-    #print('sample taken')
     T = self.game.pointer.hover_val
     self.samples.append(T)
     #self.game.graph_zone.mark_sample(self.i, self.n)
@@ -299,7 +346,6 @@ class Recorder:
   def finish(self):
       self.live = False
       total_elapsed = time.time() - self.t0
-      print(self.samples)
       print(f'finished: took {self.n} samples in {total_elapsed} seconds.') 
       X = np.linspace(0, self.dur, self.n, True)
       Y = self.samples
