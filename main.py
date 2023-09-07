@@ -18,6 +18,8 @@ BLUE = (0,0,255)
 GREEN = (0,255,0)
 DARK_BG = pygame.Color('#2f3e46')
 DARK_BG_OUTLINE = pygame.Color('#354f52')
+DARK_BTN = pygame.Color('#354f52').lerp(BLACK, 0.3)
+DARK_BTN_OUTLINE = pygame.Color('#354f52').lerp(BLACK, 0.4)
 MID = DARK_BG.lerp(DARK_BG_OUTLINE, 0.5)
 
 class Rect(object):
@@ -28,10 +30,13 @@ class Rect(object):
     self.w = w
     self.h = h
     self.bg = bg
+    self._bg = bg
     self.surf = pygame.Surface((w,h))
     self.surf.fill(self.bg)
     self.outline_width = outline_width
+    self._outline_width = outline_width
     self.outline_color = outline_color
+    self._outline_color = outline_color
 
   def outline(self):
     ow = self.outline_width
@@ -48,16 +53,6 @@ class Window(Rect):
   def __init__(self, game, top, left, w=100, h=100, bg=BLACK, outline_width=0, outline_color=WHITE, parent=None): 
     super().__init__(top,left,w,h,bg,outline_width,outline_color,parent)
     self.game = game
-    #self.parent = parent
-    #self.top = top
-    #self.left = left
-    #self.w = w
-    #self.h = h
-    #self.bg = bg
-    #self.surf = pygame.Surface((w,h))
-    #self.surf.fill(self.bg)
-    #self.outline_width = outline_width
-    #self.outline_color = outline_color
     self.children = []
 
   @property
@@ -149,7 +144,8 @@ class LevelWindow(Window):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
     self.sprites = []
-    self.ball = Ball(self, fulcrum=(self.w//2, self.h), arm_radius=self.w//3, ball_radius=12, phase=0.5, color=RED, group=self.sprites)
+    ball_color = RED.lerp(DARK_BG, .5)
+    self.ball = Ball(self, fulcrum=(self.w//2, self.h), arm_radius=self.w//3, ball_radius=12, phase=0.5, color=ball_color, group=self.sprites)
     self.game.recorder.register_listener(Listener(lambda val: self.ball.set_pos(val)))
 
   def draw(self, surf):
@@ -164,7 +160,12 @@ class LevelWindow(Window):
 class ControlPanelWindow(Window):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
-    a = ControlPanelButton(top=PAD, left=PAD)
+    bPAD = PAD//2
+    button_w = self.w - 2*bPAD
+    a = ControlPanelButton(top=bPAD, left=bPAD, w=button_w, h = button_w, parent=self, id=0 )
+    b = ControlPanelButton(top=bPAD + (button_w + bPAD), left=bPAD, w=button_w, h = button_w, parent=self, id=1)
+    c = ControlPanelButton(top=bPAD + 2*(button_w + bPAD), left=bPAD, w=button_w, h = button_w, parent=self, id=2 )
+    d = ControlPanelButton(top=bPAD + 3*(button_w + bPAD), left=bPAD, w=button_w, h = button_w, parent=self, id=3 )
 
   def draw(self, surf):
     self.surf.fill(self.bg)
@@ -178,17 +179,22 @@ class ControlPanelWindow(Window):
 ### end Window class hierarchy ###
 
 ### UI Elements ###
-class Button:
+class Button(Rect):
   group = []
-  def __init__(self, top,left,w=100,h=60,bg=WHITE):
+  def __init__(self, top,left,w=100,h=60,bg=DARK_BTN, outline_width=1,outline_color=DARK_BTN_OUTLINE,parent=None, id=None):
+    super().__init__(top,left,w,h,bg,outline_width,outline_color,parent)
     self.group.append(self)
+    self.id = id
     self.top = top
     self.left = left
     self.w = w
     self.h = h
     self.bg = bg
+    self.bg_hover = bg.lerp(WHITE, 0.3)
     self.surf = pygame.Surface((w,h))
     self.surf.fill(self.bg)
+    self.hovered = False
+    self.selected = False
 
   @property
   def bot(self):
@@ -199,17 +205,48 @@ class Button:
 
   def draw(self, surf):
     self.surf.fill(self.bg)
+    self.outline()
+
+    pygame.draw.circle(surf, WHITE, (self.left,self.top), 1)
+
     surf.blit(self.surf, (self.left, self.top))
 
+
+  def update(self, dt):
+    self.bg = self._bg
+
+    self.collide(self.parent.game.pointer.xy)
+    if self.hovered:
+      self.bg = self.bg_hover
+      self.parent.game.pointer.enter_button()
+
   def collide(self, point):
-    x, y = point
-    return x > self.left and x < self.right and y > self.top and y < self.bot 
+    x, y = point - (self.parent.left, self.parent.top)
+    self.hovered = x > self.left and x < self.right and y > self.top and y < self.bot
+    return self.hovered
 
   def click(self):
+    print('button', self.id)
+    self.selected = True
+
+  def on_click(self):
     pass
 
 class ControlPanelButton(Button):
   group = []
+  punched = None
+  def update(self,dt):
+    super().update(dt)
+    if ControlPanelButton.punched == self.id:
+      self.outline_width = 3
+      self.outline_color = DARK_BG.lerp(BLACK,.5)
+    else:
+      self.outline_width = self._outline_width
+      self.outline_color = self._outline_color
+
+  def click(self):
+    print('control panel button', self.id)
+    ControlPanelButton.punched = self.id
 
 ### end UI Elements ###
 class Pointer:
@@ -228,6 +265,7 @@ class Pointer:
     self.hover_val = None # 0?
     self.hovering = False
 
+    self.over_button = False
 
   def in_hover_zone(self):
     x, y = self.xy
@@ -239,15 +277,23 @@ class Pointer:
     self.hovering = True
     return True
 
+  def enter_button(self):
+    self.over_button = True
+
+  def exit_button(self):
+    self.over_button = False
+
   def report(self):
-    self.xy = pygame.mouse.get_pos()
+    self.xy = np.array(pygame.mouse.get_pos())
     if self.xy[0] > self.game.W/2:
       pygame.mouse.set_cursor(Pointer.hand)
     elif self.in_hover_zone():
       pygame.mouse.set_cursor(Pointer.hover)
-#      self.game.hover_zone.draw_cursor(self.xy[0])
+    elif self.over_button:
+      pygame.mouse.set_cursor(Pointer.hand)
     else:
       pygame.mouse.set_cursor(Pointer.normal)
+    self.exit_button()
 
 ### utility funcs ###
 
@@ -321,7 +367,9 @@ class Game:
     left_window.add_child(self.graph_zone)
 
     # Control Panel Window
-    self.control_panel = ControlPanelWindow(self, top = PAD, left = self.hover_zone.left, w=graph_w, h=graph_h,
+    control_panel_w = self.hover_zone.left - 2*PAD
+    control_panel_h = left_window.h - 2*PAD
+    self.control_panel = ControlPanelWindow(self, top = PAD, left = PAD, w=control_panel_w, h=control_panel_h,
                                   bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
     left_window.add_child(self.control_panel)
 
@@ -333,7 +381,7 @@ class Game:
     self.pointer = Pointer(self)
 
     # Recorder
-    self.recorder.register_listener(Listener(lambda val: setattr(right_window,'bg', DARK_BG.lerp(WHITE, val))))
+    #self.recorder.register_listener(Listener(lambda val: setattr(right_window,'bg', DARK_BG.lerp(WHITE, val))))
 
   def draw(self):
     self.screen.fill(BLACK)
@@ -351,12 +399,25 @@ class Game:
         sys.exit() 
       elif event.type == pygame.KEYDOWN:
           if event.key == pygame.K_r:
-            game.recorder.start()
-          if event.key == pygame.K_p:
+            game.recorder.start_recording()
+          elif event.key == pygame.K_p:
             game.recorder.start_playback()
+          elif event.key == pygame.K_1:
+            ControlPanelButton.group[0].click()
+          elif event.key == pygame.K_2:
+            ControlPanelButton.group[1].click()
+          elif event.key == pygame.K_3:
+            ControlPanelButton.group[2].click()
+          elif event.key == pygame.K_4:
+            ControlPanelButton.group[3].click()
+
+
 
     self.pointer.report()
     self.recorder.update(dt)
+
+    for button in ControlPanelButton.group:
+      button.update(dt)
 
   def run(self):
     self.dt = 1/self.FPS
@@ -375,8 +436,18 @@ class Listener:
     self.set_attr_func(lerp(val, self.mn, self.mx))
 
 class Signal:
-  def __init__(self):
-    pass
+  stored = { } # id => signal
+  def __init__(self, id=0, samples=None, smoothed=None, poly=None, listeners=None):
+    self.id = id
+    self.samples = samples or []
+    self.smoothed = smoothed or []
+    self.poly = poly or None
+    self.listeners = listeners or []
+
+  def reset(self):
+    self.samples = []
+    self.smoothed = []
+    self.poly = None
 
 class Recorder:
   def __init__(self, game):
@@ -387,9 +458,9 @@ class Recorder:
     self.n = int(self.sr*self.dur)
     self.n_smooth_samples = int(self.game.FPS*self.dur)
 
-    self.samples = []
-    self.smoothed = []
-    self.poly = None
+    #self.samples = []
+    #self.smoothed = []
+    #self.poly = None
 
     self.recording = False
 
@@ -397,12 +468,29 @@ class Recorder:
     self.playback_progress = 0
     self.playback_val = 0
 
-    self.listeners = [] # driveable parameters registered to respond to playback
+    #self.listeners = [] # driveable parameters registered to respond to playback
 
-    self.stored_signals = { } # Listener => smoothed_fit_curve (TEST)
-    self.active_signal = None
+    #self.stored_signals = { } # Listener => smoothed_fit_curve (TEST)
+    self.active_signal = Signal() #test
     # TODO: keep an 'active signal' and swap out with others as user clicks through
 
+  @property
+  def samples(self):
+    return self.active_signal.samples
+  @property
+  def smoothed(self):
+    return self.active_signal.smoothed
+  @property
+  def poly(self):
+    return self.active_signal.poly
+  @property
+  def listeners(self): # testing..maybe don't use this property in this class
+    return self.active_signal.listeners
+  
+  
+  def set_active_signal(self, id):
+    self.active_signal = Signal.stored.get(id, Signal(id=id))
+  
   def update(self, dt): # dt in ms
     if self.recording:
       t = time.time()
@@ -414,7 +502,7 @@ class Recorder:
       if elapsed >= self.T*self.i:
         self.sample()
 
-    elif self.playing:
+    elif self.playing: # TODO: handle all listeners for all Signals.stored signals, not just active_signal and its listeners
       t = time.time()
       elapsed = t-self.playback_t0
       self.playback_progress = clamp((elapsed/self.dur),0,1)
@@ -445,16 +533,17 @@ class Recorder:
       DOWNSAMPLE = 2
       X = np.r_[X[:-1][::DOWNSAMPLE],X[-1]]
       Y = np.r_[Y[:-1][::DOWNSAMPLE],Y[-1]]
-      self.poly = piecewise3poly(X,Y)
-      #n_smooth_samples = self.n_smooth_samples # int(self.game.graph_zone.w)
+      self.active_signal.poly = piecewise3poly(X,Y)
       t = np.linspace(0, self.dur, self.n_smooth_samples, False)
-      self.smoothed = [clamp(self.poly(i),0,1) for i in t]
+      self.active_signal.smoothed = [clamp(self.poly(i),0,1) for i in t]
 
-  def start(self):
+  def start_recording(self):
     self.recording = True
+    self.active_signal.reset()
     self.i = 0
-    self.samples = []
-    self.smoothed = []
+    #self.samples = []
+    #self.smoothed = []
+
     self.t0 = time.time()
     self.sample()
     print('started recording')
