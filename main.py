@@ -333,8 +333,6 @@ class Ball:
     pygame.draw.circle(surf, self.color.lerp(self.window.bg, .4), self.pos, self.r)
     pygame.draw.circle(surf, self.color.lerp(self.window.bg, .8), self.pos, self.r,1)
 
-
-
 ### end game objects ###
 
 class Game:
@@ -447,11 +445,13 @@ class Signal:
     self.smoothed = smoothed or []
     self.poly = poly or None
     self.listeners = listeners or []
+    self.complete = False
 
   def reset(self):
     self.samples = []
     self.smoothed = []
     self.poly = None
+    self.complete = False
 
 class Recorder:
   def __init__(self, game):
@@ -468,8 +468,7 @@ class Recorder:
     self.playback_progress = 0
     self.playback_val = 0
 
-    self.active_signal = Signal()
-    # TODO: keep an 'active signal' and swap out with others as user clicks through
+    self.active_signal = Signal() # keep an 'active signal' and swap out with others as user clicks through
 
   @property
   def samples(self):
@@ -486,7 +485,7 @@ class Recorder:
   
   
   def set_active_signal(self, id):
-    self.end_playback() # TESTING! probably remove so as to not interrupt playback when switching
+    #self.end_playback() # TESTING! probably remove so as to not interrupt playback when switching
 
     if self.recording:
       self.cancel_recording()
@@ -504,7 +503,7 @@ class Recorder:
       t = time.time()
       elapsed = t-self.t0
 
-      for listener in self.listeners: # testing this here...should really be at the per-signal level
+      for listener in self.listeners: 
         listener.notify(self.game.pointer.hover_val)
 
       if elapsed >= self.T*self.i:
@@ -515,7 +514,9 @@ class Recorder:
       elapsed = t-self.playback_t0
       self.playback_progress = clamp((elapsed/self.dur),0,1)
 
-      for sig in Signal.stored.values():
+      for sig in Signal.stored.values(): # Playback all stored signals
+        if not sig.complete:
+          continue
         playback_index = int(self.playback_progress*(len(sig.smoothed) - 1))
         playback_val = sig.smoothed[playback_index]
         for listener in sig.listeners:
@@ -551,6 +552,7 @@ class Recorder:
       self.active_signal.poly = piecewise3poly(X,Y)
       t = np.linspace(0, self.dur, self.n_smooth_samples, False)
       self.active_signal.smoothed = [clamp(self.poly(i),0,1) for i in t]
+      self.active_signal.complete = True
 
   def cancel_recording(self):
     self.active_signal.reset()
@@ -565,8 +567,8 @@ class Recorder:
     print('started recording')
 
   def start_playback(self):
-    if len(self.active_signal.samples) != self.n: # Signal not finished recording (TESTING)
-      return 
+    #if not self.active_signal.complete: # (note: check handled in update now..unneeded here.)
+    #  return
     self.playing = True
     self.playback_t0 = time.time()
 
