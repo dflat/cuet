@@ -166,6 +166,7 @@ class ControlPanelWindow(Window):
     b = ControlPanelButton(top=bPAD + (button_w + bPAD), left=bPAD, w=button_w, h = button_w, parent=self, id=1)
     c = ControlPanelButton(top=bPAD + 2*(button_w + bPAD), left=bPAD, w=button_w, h = button_w, parent=self, id=2 )
     d = ControlPanelButton(top=bPAD + 3*(button_w + bPAD), left=bPAD, w=button_w, h = button_w, parent=self, id=3 )
+    a.click()
 
   def draw(self, surf):
     self.surf.fill(self.bg)
@@ -247,6 +248,7 @@ class ControlPanelButton(Button):
   def click(self):
     print('control panel button', self.id)
     ControlPanelButton.punched = self.id
+    self.parent.game.recorder.set_active_signal(self.id) # testing
 
 ### end UI Elements ###
 class Pointer:
@@ -410,6 +412,8 @@ class Game:
             ControlPanelButton.group[2].click()
           elif event.key == pygame.K_4:
             ControlPanelButton.group[3].click()
+          elif event.key == pygame.K_6:
+            self.recorder.register_listener(Listener(lambda val: setattr(self.windows[1],'bg', DARK_BG.lerp(WHITE, val))))
 
 
 
@@ -458,20 +462,13 @@ class Recorder:
     self.n = int(self.sr*self.dur)
     self.n_smooth_samples = int(self.game.FPS*self.dur)
 
-    #self.samples = []
-    #self.smoothed = []
-    #self.poly = None
-
     self.recording = False
 
     self.playing = False
     self.playback_progress = 0
     self.playback_val = 0
 
-    #self.listeners = [] # driveable parameters registered to respond to playback
-
-    #self.stored_signals = { } # Listener => smoothed_fit_curve (TEST)
-    self.active_signal = Signal() #test
+    self.active_signal = Signal()
     # TODO: keep an 'active signal' and swap out with others as user clicks through
 
   @property
@@ -489,7 +486,18 @@ class Recorder:
   
   
   def set_active_signal(self, id):
-    self.active_signal = Signal.stored.get(id, Signal(id=id))
+    self.end_playback() # TESTING! probably remove so as to not interrupt playback when switching
+
+    if self.recording:
+      self.cancel_recording()
+
+    print('set active signal to', id)
+    signal = Signal.stored.get(id)
+    if not signal: # create new Signal
+      signal = Signal(id=id)
+      Signal.stored[id] = signal
+      self.end_playback() # testing
+    self.active_signal = signal #Signal.stored.get(id, Signal(id=id))
   
   def update(self, dt): # dt in ms
     if self.recording:
@@ -506,10 +514,18 @@ class Recorder:
       t = time.time()
       elapsed = t-self.playback_t0
       self.playback_progress = clamp((elapsed/self.dur),0,1)
-      playback_index = int(self.playback_progress*(len(self.smoothed) - 1))
-      self.playback_val = self.smoothed[playback_index]
-      for listener in self.listeners:
-        listener.notify(self.playback_val)
+
+      for sig in Signal.stored.values():
+        playback_index = int(self.playback_progress*(len(sig.smoothed) - 1))
+        playback_val = sig.smoothed[playback_index]
+        for listener in sig.listeners:
+          listener.notify(playback_val)
+
+      #playback_index = int(self.playback_progress*(len(self.smoothed) - 1))
+      #self.playback_val = self.smoothed[playback_index]
+      #for listener in self.listeners:
+      #  listener.notify(self.playback_val)
+
       if elapsed >= self.dur: 
         self.end_playback()
 
@@ -519,7 +535,6 @@ class Recorder:
   def sample(self):
     T = self.game.pointer.hover_val
     self.samples.append(T)
-    #self.game.graph_zone.mark_sample(self.i, self.n)
     self.i += 1
     if self.i == self.n: # finished sampling 
       self.finish()
@@ -537,18 +552,21 @@ class Recorder:
       t = np.linspace(0, self.dur, self.n_smooth_samples, False)
       self.active_signal.smoothed = [clamp(self.poly(i),0,1) for i in t]
 
+  def cancel_recording(self):
+    self.active_signal.reset()
+    self.recording = False
+
   def start_recording(self):
     self.recording = True
     self.active_signal.reset()
     self.i = 0
-    #self.samples = []
-    #self.smoothed = []
-
     self.t0 = time.time()
     self.sample()
     print('started recording')
 
   def start_playback(self):
+    if len(self.active_signal.samples) != self.n: # Signal not finished recording (TESTING)
+      return 
     self.playing = True
     self.playback_t0 = time.time()
 
