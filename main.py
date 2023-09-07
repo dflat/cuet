@@ -20,11 +20,9 @@ DARK_BG = pygame.Color('#2f3e46')
 DARK_BG_OUTLINE = pygame.Color('#354f52')
 MID = DARK_BG.lerp(DARK_BG_OUTLINE, 0.5)
 
-### Window class hierarchy ###
-class Window:
-  def __init__(self, game, top, left, w=100, h=100, bg=BLACK, outline_width=0, outline_color=WHITE, parent=None): 
+class Rect(object):
+  def __init__(self, top, left, w, h, bg=BLACK, outline_width=1, outline_color=WHITE, parent=None):
     self.parent = parent
-    self.game = game
     self.top = top
     self.left = left
     self.w = w
@@ -34,6 +32,32 @@ class Window:
     self.surf.fill(self.bg)
     self.outline_width = outline_width
     self.outline_color = outline_color
+
+  def outline(self):
+    ow = self.outline_width
+    how = ow / 2
+    fixeven = -1 if ow % 2 == 0 else 0
+    offs = int(how)
+    pygame.draw.line(self.surf, self.outline_color, (0, offs + fixeven), (self.w, offs + fixeven), ow) # top
+    pygame.draw.line(self.surf, self.outline_color, (0,self.h - (offs+1)), (self.w, self.h - (offs+1)), ow) # bot
+    pygame.draw.line(self.surf, self.outline_color, (offs,0), (offs, self.h), ow) # left 
+    pygame.draw.line(self.surf, self.outline_color, (self.w - (offs + 1 + fixeven),0), (self.w - (offs + 1 + fixeven), self.h), ow) # right
+
+### Window class hierarchy ###
+class Window(Rect):
+  def __init__(self, game, top, left, w=100, h=100, bg=BLACK, outline_width=0, outline_color=WHITE, parent=None): 
+    super().__init__(top,left,w,h,bg,outline_width,outline_color,parent)
+    self.game = game
+    #self.parent = parent
+    #self.top = top
+    #self.left = left
+    #self.w = w
+    #self.h = h
+    #self.bg = bg
+    #self.surf = pygame.Surface((w,h))
+    #self.surf.fill(self.bg)
+    #self.outline_width = outline_width
+    #self.outline_color = outline_color
     self.children = []
 
   @property
@@ -137,8 +161,57 @@ class LevelWindow(Window):
 
     surf.blit(self.surf, (self.left, self.top))
 
+class ControlPanelWindow(Window):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    a = ControlPanelButton(top=PAD, left=PAD)
+
+  def draw(self, surf):
+    self.surf.fill(self.bg)
+    self.outline()
+
+    for button in ControlPanelButton.group:
+      button.draw(self.surf)
+
+    surf.blit(self.surf, (self.left, self.top))
+
 ### end Window class hierarchy ###
 
+### UI Elements ###
+class Button:
+  group = []
+  def __init__(self, top,left,w=100,h=60,bg=WHITE):
+    self.group.append(self)
+    self.top = top
+    self.left = left
+    self.w = w
+    self.h = h
+    self.bg = bg
+    self.surf = pygame.Surface((w,h))
+    self.surf.fill(self.bg)
+
+  @property
+  def bot(self):
+    return self.top + self.h - 1
+  @property
+  def right(self):
+    return self.left + self.w - 1
+
+  def draw(self, surf):
+    self.surf.fill(self.bg)
+    surf.blit(self.surf, (self.left, self.top))
+
+  def collide(self, point):
+    x, y = point
+    return x > self.left and x < self.right and y > self.top and y < self.bot 
+
+  def click(self):
+    pass
+
+class ControlPanelButton(Button):
+  group = []
+
+### end UI Elements ###
 class Pointer:
   hover = pygame.cursors.Cursor(pygame.SYSTEM_CURSOR_CROSSHAIR)
   normal = pygame.cursors.Cursor(pygame.SYSTEM_CURSOR_ARROW)
@@ -169,9 +242,9 @@ class Pointer:
   def report(self):
     self.xy = pygame.mouse.get_pos()
     if self.xy[0] > self.game.W/2:
-      pygame.mouse.set_cursor(Pointer.hover)
-    elif self.in_hover_zone():
       pygame.mouse.set_cursor(Pointer.hand)
+    elif self.in_hover_zone():
+      pygame.mouse.set_cursor(Pointer.hover)
 #      self.game.hover_zone.draw_cursor(self.xy[0])
     else:
       pygame.mouse.set_cursor(Pointer.normal)
@@ -232,23 +305,34 @@ class Game:
     self.screen = pygame.display.set_mode((self.W, self.H))
     self.recorder = Recorder(self)
 
+    # Main Control (Left Screen) Window
     left_window = Window(self, top = 0, left=0, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
 
+    # Signal Input Window
     hover_w, hover_h = left_window.w *0.8, left_window.h*0.2
     self.hover_zone = HoverWindow(self, top = left_window.h//2 - hover_h//2, left = (left_window.w - hover_w)//2, w=hover_w, h=hover_h,
                                   bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
     left_window.add_child(self.hover_zone)
 
+    # Graph Window
     graph_w, graph_h = left_window.w *0.8, (left_window.h - self.hover_zone.bot - PAD*2)
     self.graph_zone = GraphWindow(self, top = self.hover_zone.bot + PAD, left = self.hover_zone.left, w=graph_w, h=graph_h,
                                   bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
     left_window.add_child(self.graph_zone)
 
+    # Control Panel Window
+    self.control_panel = ControlPanelWindow(self, top = PAD, left = self.hover_zone.left, w=graph_w, h=graph_h,
+                                  bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
+    left_window.add_child(self.control_panel)
+
+    # Level Window (Right Screen)
     right_window = LevelWindow(self, top = 0, left=self.W//2, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
     self.windows = [left_window, right_window]
 
+    # Pointer
     self.pointer = Pointer(self)
 
+    # Recorder
     self.recorder.register_listener(Listener(lambda val: setattr(right_window,'bg', DARK_BG.lerp(WHITE, val))))
 
   def draw(self):
@@ -290,6 +374,10 @@ class Listener:
   def notify(self, val):
     self.set_attr_func(lerp(val, self.mn, self.mx))
 
+class Signal:
+  def __init__(self):
+    pass
+
 class Recorder:
   def __init__(self, game):
     self.game = game
@@ -297,25 +385,30 @@ class Recorder:
     self.dur = 5 # capture seconds
     self.T = 1/self.sr # period in seconds
     self.n = int(self.sr*self.dur)
+    self.n_smooth_samples = int(self.game.FPS*self.dur)
+
     self.samples = []
     self.smoothed = []
     self.poly = None
-    self.live = False
+
+    self.recording = False
 
     self.playing = False
     self.playback_progress = 0
     self.playback_val = 0
 
     self.listeners = [] # driveable parameters registered to respond to playback
+
     self.stored_signals = { } # Listener => smoothed_fit_curve (TEST)
+    self.active_signal = None
     # TODO: keep an 'active signal' and swap out with others as user clicks through
 
   def update(self, dt): # dt in ms
-    if self.live:
+    if self.recording:
       t = time.time()
       elapsed = t-self.t0
 
-      for listener in self.listeners: # testing this here...
+      for listener in self.listeners: # testing this here...should really be at the per-signal level
         listener.notify(self.game.pointer.hover_val)
 
       if elapsed >= self.T*self.i:
@@ -344,20 +437,21 @@ class Recorder:
       self.finish()
 
   def finish(self):
-      self.live = False
+      self.recording = False
       total_elapsed = time.time() - self.t0
       print(f'finished: took {self.n} samples in {total_elapsed} seconds.') 
       X = np.linspace(0, self.dur, self.n, True)
       Y = self.samples
-      DOWNSAMPLE = 2#2
+      DOWNSAMPLE = 2
       X = np.r_[X[:-1][::DOWNSAMPLE],X[-1]]
       Y = np.r_[Y[:-1][::DOWNSAMPLE],Y[-1]]
       self.poly = piecewise3poly(X,Y)
-      t = np.linspace(0, self.dur, int(self.game.graph_zone.w), False)#False)
+      #n_smooth_samples = self.n_smooth_samples # int(self.game.graph_zone.w)
+      t = np.linspace(0, self.dur, self.n_smooth_samples, False)
       self.smoothed = [clamp(self.poly(i),0,1) for i in t]
 
   def start(self):
-    self.live = True
+    self.recording = True
     self.i = 0
     self.samples = []
     self.smoothed = []
