@@ -1,6 +1,7 @@
 import time
 import sys
 import math
+from collections import deque
  
 import numpy as np
 from fit_curve import piecewise3poly
@@ -250,6 +251,110 @@ class ControlPanelButton(Button):
     ControlPanelButton.punched = self.id
     self.parent.game.recorder.set_active_signal(self.id) # testing
 
+class Cable:
+  COLORS = [pygame.Color('#'+hexstr) for hexstr in ('ef476f','118ab2','ffc857','25a18e','f2b5d4')]
+  n_path_samples = 100
+  width = 4
+  group = deque()#[]
+  dropped = []
+  MAX_LEN = 1000
+  MIN_LEN = 50
+  COLOR_INDEX = 0
+  MAX_COUNT = 5
+  active_cable = None
+  def __init__(self, game, source=None, dest=None, color=None):
+    Cable.group.append(self)
+    if len(Cable.group) > Cable.MAX_COUNT:
+      kill = Cable.group.popleft()
+      del kill
+    self.game = game
+    self.source = source
+    self.dest = dest
+    self.dragging = False
+    self.plugged = False
+    self.startpos = np.array((0,0))
+    self.endpos = None
+    self.color = color or Cable.choose_color()
+    self.path = []
+    self.samps = []
+    self.x = np.linspace(0,1,Cable.n_path_samples)
+    self.poly = np.polynomial.Polynomial([0,0,3,-2])
+    self.deriv = np.polynomial.Polynomial([0,6,-6,0])
+    angles = np.arctan(self.deriv(self.x))
+    self.normals = np.c_[-np.sin(angles), np.cos(angles)]
+    self._normals = self.normals.copy()
+    self.y = self.poly(self.x)
+
+    self.start() # start at creation time
+    #self.y = 3*np.power(self.x, 2) - 2*np.power(self.x, 3)
+
+  @classmethod
+  def choose_color(cls):
+    color = cls.COLORS[cls.COLOR_INDEX % len(cls.COLORS)]
+    cls.COLOR_INDEX += 1
+    return color 
+
+  def update(self, dt):
+    if self.dragging:
+      self.endpos = self.game.pointer.xy
+      u,v = self.endpos - self.startpos
+      if np.linalg.norm((u,v)) > Cable.MAX_LEN:
+        self.drop()
+        print('dropped cable')
+
+      self.samps = self.startpos + np.c_[u*self.x, v*self.y]# pre-calculate positions (or are unvectorized multiplies faster due to less memory alloc?)
+      #self.normals = self._normals*(1/u,1/v)
+
+  def normalize(self, v):
+    return v/np.linalg.norm(v)
+
+  def draw(self, surf):
+    for i in range(1, Cable.n_path_samples):
+      pygame.draw.line(surf, self.color, self.samps[i-1], self.samps[i], Cable.width)
+      offset = Cable.width//2
+      top_color = self.color.lerp(WHITE, 0.5)
+      bot_color = self.color.lerp(BLACK, 0.3)
+      #r = Cable.width/2
+      #normal_offset_a = self.normalize(self.normals[i-1])*r
+      #normal_offset_b = self.normalize(self.normals[i])*r
+      #pygame.draw.line(surf, top_color, self.samps[i-1] - normal_offset_a, self.samps[i] - normal_offset_b, 3)
+      #pygame.draw.line(surf, top_color, self.samps[i-1] + normal_offset_a, self.samps[i] + normal_offset_b, 1)
+      pygame.draw.line(surf, top_color, self.samps[i-1] - (0, offset), self.samps[i] - (0, offset), 3)
+      pygame.draw.line(surf, bot_color, self.samps[i-1] + (0, offset), self.samps[i] + (0, offset))
+
+
+
+  def get_poly(self): # defunct? maybe use to clean up cable after plugged (too expensive to live calculate? prefer domain stretching?)
+    """
+    form: p(t) = at^3 + bt^2
+    solve for a and b assuming (0,0) as relative origin
+    """
+    x,y = self.endpos - self.startpos
+    a = -2*y/x**3
+    b = -3*a*x/2
+    self.poly = np.polynomial([0,0,b,a])
+
+  def start(self):
+    self.dragging = True
+    self.startpos = self.game.pointer.xy
+    Cable.active_cable = self
+
+  def plug(self):
+    self.endpos = self.game.pointer.xy
+    u,v = self.endpos - self.startpos
+    if np.linalg.norm((u,v)) < Cable.MIN_LEN:
+      return self.drop()
+    self.dragging = False
+    self.plugged = True
+
+  def drop(self):
+    Cable.dropped.append(self)
+    Cable.active_cable = None
+    self.dragging = False
+    self.endpos = None
+    #self.samps = []
+
+
 ### end UI Elements ###
 class Pointer:
   hover = pygame.cursors.Cursor(pygame.SYSTEM_CURSOR_CROSSHAIR)
@@ -346,7 +451,7 @@ class Game:
 
     self.FPS = 60.0
     self.clock = pygame.time.Clock()
-
+    self.frame = 0
 
     self.screen = pygame.display.set_mode((self.W, self.H))
     self.recorder = Recorder(self)
@@ -389,14 +494,27 @@ class Game:
     for win in self.windows:
       win.draw(self.screen)
 
+    for cable in Cable.group:
+      cable.draw(self.screen)
+
     pygame.display.flip()
 
   def update(self):
+    self.frame += 1
     dt = self.dt
     for event in pygame.event.get():
       if event.type == QUIT:
         pygame.quit()
         sys.exit() 
+
+      elif event.type == pygame.MOUSEBUTTONDOWN:
+        Cable(self)
+        print('got down', self.frame)
+      elif event.type == pygame.MOUSEBUTTONUP:
+        print('got up', self.frame)
+        if Cable.active_cable:
+           Cable.active_cable.plug()
+
       elif event.type == pygame.KEYDOWN:
           if event.key == pygame.K_r:
             game.recorder.start_recording()
@@ -420,6 +538,13 @@ class Game:
 
     for button in ControlPanelButton.group:
       button.update(dt)
+
+    for cable in Cable.group:
+      cable.update(dt)
+
+    for cable in Cable.dropped:
+      Cable.group.remove(cable)
+    Cable.dropped = []
 
   def run(self):
     self.dt = 1/self.FPS
