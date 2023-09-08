@@ -22,6 +22,8 @@ DARK_BG_OUTLINE = pygame.Color('#354f52')
 DARK_BTN = pygame.Color('#354f52').lerp(BLACK, 0.3)
 DARK_BTN_OUTLINE = pygame.Color('#354f52').lerp(BLACK, 0.4)
 MID = DARK_BG.lerp(DARK_BG_OUTLINE, 0.5)
+AMBER  = pygame.Color('#828a5b')
+BEIGE  = pygame.Color('#f2e3bc')
 
 class Rect(object):
   def __init__(self, top, left, w, h, bg=BLACK, outline_width=1, outline_color=WHITE, parent=None):
@@ -38,6 +40,28 @@ class Rect(object):
     self._outline_width = outline_width
     self.outline_color = outline_color
     self._outline_color = outline_color
+
+  @property
+  def bot(self):
+    return self.top + self.h - 1
+  @property
+  def right(self):
+    return self.left + self.w - 1
+  @property
+  def absleft(self):
+    if self.parent is None:
+      return self.left
+    return self.parent.absleft + self.left
+  @property
+  def absright(self):
+    if self.parent is None:
+      return self.right
+    return self.parent.absleft + self.w
+  @property
+  def abstop(self):
+    if self.parent is None:
+      return self.top
+    return self.parent.abstop + self.top
 
   def outline(self):
     ow = self.outline_width
@@ -128,6 +152,8 @@ class HoverWindow(Window):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
     self.hovered = False
+    self.cursor_color = AMBER.lerp(BEIGE, .1).lerp(DARK_BG,.2)
+    self.cursor_outline_color = self.cursor_color.lerp(BLACK, 0.3)
 
   def draw(self, surf):
     super().draw(surf)
@@ -135,11 +161,10 @@ class HoverWindow(Window):
       self.draw_cursor(surf, game.pointer.xy[0])
 
   def draw_cursor(self, surf, x):
-      color = DARK_BG_OUTLINE
       width = 3
-      pygame.draw.line(surf, color, (x,self.top), (x, self.top + self.h), width)
-      pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x + width,self.top), (x + width, self.top + self.h), width)
-      pygame.draw.line(surf, color.lerp(DARK_BG, 0.6), (x - width,self.top), (x - width, self.top + self.h), width)
+      pygame.draw.line(surf, self.cursor_color, (x,self.top), (x, self.top + self.h), width)
+      pygame.draw.line(surf, self.cursor_outline_color, (x + width,self.top), (x + width, self.top + self.h), width)
+      pygame.draw.line(surf, self.cursor_outline_color, (x - width,self.top), (x - width, self.top + self.h), width)
 
 class LevelWindow(Window):
   def __init__(self, *args, **kwargs):
@@ -178,6 +203,51 @@ class ControlPanelWindow(Window):
 
     surf.blit(self.surf, (self.left, self.top))
 
+
+class ListenerPanelWindow(Window):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    bhPAD = PAD//2
+    button_w = self.w - 2*bhPAD
+    n_buttons = 4
+    v_heights = get_spacing(total=self.h, s=button_w, n=n_buttons)
+    for i in range(n_buttons):
+      ListenerPanelButton(top=v_heights[i], left=bhPAD, w=button_w, h=button_w, parent=self,id=i)
+
+  def draw(self, surf):
+    self.surf.fill(self.bg)
+    self.outline()
+
+    for button in ListenerPanelButton.group:
+      button.draw(self.surf)
+
+    surf.blit(self.surf, (self.left, self.top))
+
+class DebugWindow(Window):
+  MSGBOX_OFFSET = (10,10)
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.font = pygame.font.SysFont("monospace", 18)
+    self.messages = []
+    self.label = ""
+    self.color = BLACK
+
+  def print(self, text):
+    self.messages.append(str(text))
+
+  def update(self, dt):
+    text = "\n".join(self.messages)
+    self.label = self.font.render(text, 1, self.color)
+    self.messages = []
+
+  def draw(self, surf):
+    self.surf.fill(self.bg)
+    self.outline()
+    self.surf.blit(self.label, DebugWindow.MSGBOX_OFFSET)
+
+    surf.blit(self.surf, (self.left, self.top))
+
 ### end Window class hierarchy ###
 
 ### UI Elements ###
@@ -198,12 +268,6 @@ class Button(Rect):
     self.hovered = False
     self.selected = False
 
-  @property
-  def bot(self):
-    return self.top + self.h - 1
-  @property
-  def right(self):
-    return self.left + self.w - 1
 
   def draw(self, surf):
     self.surf.fill(self.bg)
@@ -225,6 +289,8 @@ class Button(Rect):
   def collide(self, point):
     x, y = point - (self.parent.left, self.parent.top)
     self.hovered = x > self.left and x < self.right and y > self.top and y < self.bot
+    if self.hovered:
+      self.parent.game.debug_panel.print(f'top-left xy: {(self.left,self.top)}, parent xy: {(self.parent.left,self.parent.top)}')
     return self.hovered
 
   def click(self):
@@ -251,8 +317,13 @@ class ControlPanelButton(Button):
     ControlPanelButton.punched = self.id
     self.parent.game.recorder.set_active_signal(self.id) # testing
 
+class ListenerPanelButton(Button):
+  group = []
+
+### end Button classes ###
+
 class Cable:
-  COLORS = [pygame.Color('#'+hexstr) for hexstr in ('ef476f','118ab2','ffc857','25a18e','f2b5d4')]
+  COLORS = [pygame.Color('#'+hexstr) for hexstr in ('de4d86','118ab2','ffc857','25a18e','7b2cbf')]
   n_path_samples = 100
   width = 4
   group = deque()#[]
@@ -294,16 +365,19 @@ class Cable:
     cls.COLOR_INDEX += 1
     return color 
 
-  def update(self, dt):
-    if self.dragging:
-      self.endpos = self.game.pointer.xy
+  def update_path(self):
       u,v = self.endpos - self.startpos
       if np.linalg.norm((u,v)) > Cable.MAX_LEN:
         self.drop()
         print('dropped cable')
-
       self.samps = self.startpos + np.c_[u*self.x, v*self.y]# pre-calculate positions (or are unvectorized multiplies faster due to less memory alloc?)
       #self.normals = self._normals*(1/u,1/v)
+
+  def update(self, dt):
+    if self.dragging:
+      self.endpos = self.game.pointer.xy
+      self.update_path()
+
 
   def normalize(self, v):
     return v/np.linalg.norm(v)
@@ -337,6 +411,14 @@ class Cable:
   def start(self):
     self.dragging = True
     self.startpos = self.game.pointer.xy
+
+    selected_signal_bank = None
+    for signal_button in ControlPanelButton.group:
+      if signal_button.hovered:
+        selected_signal_bank = signal_button
+        self.startpos[0] = selected_signal_bank.absleft + selected_signal_bank.w
+        #self.update_path()
+
     Cable.active_cable = self
 
   def plug(self):
@@ -344,6 +426,19 @@ class Cable:
     u,v = self.endpos - self.startpos
     if np.linalg.norm((u,v)) < Cable.MIN_LEN:
       return self.drop()
+
+    # check if cursor is over a listener button
+    selected_listener = None
+    for listener_button in ListenerPanelButton.group:
+      if listener_button.hovered:
+        selected_listener = listener_button
+        self.endpos[0] = listener_button.absleft
+        self.update_path()
+        # todo -> add to listener
+        break
+    if not selected_listener:
+      return self.drop()
+
     self.dragging = False
     self.plugged = True
 
@@ -413,6 +508,14 @@ def rescale(t, mn, mx, a=0, b=1):
 def lerp(t, a, b):
   return a + t*(b-a)
 
+def get_spacing(total, s, n):
+  gaps = n+1
+  filled = n*s
+  empty = total - filled
+  gap_size = empty / gaps 
+  first = gap_size
+  return [gap_size + (gap_size + s)*i for i in range(n)]
+
 ### end utility funcs ###
 
 ### game objects ###
@@ -457,12 +560,13 @@ class Game:
     self.recorder = Recorder(self)
 
     # Main Control (Left Screen) Window
-    left_window = Window(self, top = 0, left=0, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
+    MAIN_BG = DARK_BG.lerp(BLACK,0.1)
+    left_window = Window(self, top = 0, left=0, w=self.W//2, h=self.H, bg=MAIN_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
 
     # Signal Input Window
     hover_w, hover_h = left_window.w *0.8, left_window.h*0.2
     self.hover_zone = HoverWindow(self, top = left_window.h//2 - hover_h//2, left = (left_window.w - hover_w)//2, w=hover_w, h=hover_h,
-                                  bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
+                                  bg=MID.lerp(AMBER,.3), outline_width=3, outline_color=DARK_BG_OUTLINE.lerp(AMBER,.3) ) 
     left_window.add_child(self.hover_zone)
 
     # Graph Window
@@ -477,6 +581,18 @@ class Game:
     self.control_panel = ControlPanelWindow(self, top = PAD, left = PAD, w=control_panel_w, h=control_panel_h,
                                   bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
     left_window.add_child(self.control_panel)
+
+    # Listener Panel Window
+    listener_panel_w = left_window.w - self.hover_zone.right - 2*PAD
+    listener_panel_h = left_window.h - 2*PAD
+    self.listener_panel = ListenerPanelWindow(self, top = PAD, left = self.hover_zone.right + PAD, w=listener_panel_w, h=listener_panel_h,
+                                  bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
+    left_window.add_child(self.listener_panel)
+
+    # Debug Window
+    self.debug_panel = DebugWindow(self, top = PAD, left = self.hover_zone.left, w=graph_w, h=graph_h,
+                                  bg=MID.lerp(WHITE,0.3), outline_width=1, outline_color=DARK_BG_OUTLINE ) 
+    left_window.add_child(self.debug_panel)
 
     # Level Window (Right Screen)
     right_window = LevelWindow(self, top = 0, left=self.W//2, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
@@ -504,18 +620,18 @@ class Game:
     dt = self.dt
     for event in pygame.event.get():
       if event.type == QUIT:
-        pygame.quit()
-        sys.exit() 
+        self.quit()
 
       elif event.type == pygame.MOUSEBUTTONDOWN:
-        Cable(self)
-        print('got down', self.frame)
+        if self.pointer.over_button:
+          Cable(self)
       elif event.type == pygame.MOUSEBUTTONUP:
-        print('got up', self.frame)
         if Cable.active_cable:
            Cable.active_cable.plug()
 
       elif event.type == pygame.KEYDOWN:
+          if event.key == pygame.K_q:
+            self.quit()
           if event.key == pygame.K_r:
             game.recorder.start_recording()
           elif event.key == pygame.K_p:
@@ -539,6 +655,9 @@ class Game:
     for button in ControlPanelButton.group:
       button.update(dt)
 
+    for button in ListenerPanelButton.group:
+      button.update(dt)
+
     for cable in Cable.group:
       cable.update(dt)
 
@@ -546,12 +665,18 @@ class Game:
       Cable.group.remove(cable)
     Cable.dropped = []
 
+    self.debug_panel.update(dt)
+
   def run(self):
     self.dt = 1/self.FPS
     while True:
       self.update()
       self.draw()
       self.dt = self.clock.tick(self.FPS)
+
+  def quit(self):
+        pygame.quit()
+        sys.exit() 
 
 class Listener:
   def __init__(self, set_attr_func, mn=0, mx=1):
