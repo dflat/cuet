@@ -1,7 +1,7 @@
 import time
 import sys
 import math
-from collections import deque
+from collections import deque, defaultdict
  
 import numpy as np
 from fit_curve import piecewise3poly
@@ -209,7 +209,7 @@ class ListenerPanelWindow(Window):
     super().__init__(*args, **kwargs)
     bhPAD = PAD//2
     button_w = self.w - 2*bhPAD
-    n_buttons = 4
+    n_buttons = 4 # TODO: pull this value from LevelConfig object
     v_heights = get_spacing(total=self.h, s=button_w, n=n_buttons)
     for i in range(n_buttons):
       ListenerPanelButton(top=v_heights[i], left=bhPAD, w=button_w, h=button_w, parent=self,id=i)
@@ -324,7 +324,7 @@ class ListenerPanelButton(Button):
 
 class Cable:
   COLORS = [pygame.Color('#'+hexstr) for hexstr in ('de4d86','118ab2','ffc857','25a18e','7b2cbf')]
-  n_path_samples = 100
+  n_path_samples = 20
   width = 4
   group = deque()#[]
   dropped = []
@@ -411,15 +411,14 @@ class Cable:
   def start(self):
     self.dragging = True
     self.startpos = self.game.pointer.xy
+    Cable.active_cable = self
 
-    selected_signal_bank = None
+    self.selected_signal_bank = None
     for signal_button in ControlPanelButton.group:
       if signal_button.hovered:
-        selected_signal_bank = signal_button
-        self.startpos[0] = selected_signal_bank.absleft + selected_signal_bank.w
-        #self.update_path()
+        self.selected_signal_bank = signal_button
+        self.startpos[0] = self.selected_signal_bank.absleft + self.selected_signal_bank.w
 
-    Cable.active_cable = self
 
   def plug(self):
     self.endpos = self.game.pointer.xy
@@ -428,15 +427,16 @@ class Cable:
       return self.drop()
 
     # check if cursor is over a listener button
-    selected_listener = None
+    selected_listener_bank = None
     for listener_button in ListenerPanelButton.group:
       if listener_button.hovered:
-        selected_listener = listener_button
+        selected_listener_bank = listener_button
         self.endpos[0] = listener_button.absleft
         self.update_path()
         # todo -> add to listener
+        self.game.patch_bay.connect(self.selected_signal_bank.id, selected_listener_bank.id)
         break
-    if not selected_listener:
+    if not selected_listener_bank:
       return self.drop()
 
     self.dragging = False
@@ -449,6 +449,34 @@ class Cable:
     self.endpos = None
     #self.samps = []
 
+
+### Level Config ###
+class LevelConfig:
+  def __init__(self, game):
+    self.game = game
+    self.listener_pool = { 
+              0: Listener(lambda val: setattr(self.game.level_window,'bg', DARK_BG.lerp(WHITE, val))),
+              1: Listener(lambda val: self.game.level_window.ball.set_pos(val)),
+            }
+
+class PatchBay:
+  def __init__(self, game, size=10):
+    self.game = game
+    self.graph = np.zeros((size,size),dtype=int)
+
+  def connect(self, source, dest):
+    self.graph[source][dest] = 1
+
+  def disconnect(self, source, dest):
+    self.graph[source][dest] = 0
+
+  def get_listeners(self, source_id):
+    return self.graph[source_id,:].nonzero()[0]
+
+  def get_sources(self, listener_id):
+    return self.graph[:,listener_id].nonzero()[0]
+
+### end Level Config ###
 
 ### end UI Elements ###
 class Pointer:
@@ -558,6 +586,10 @@ class Game:
 
     self.screen = pygame.display.set_mode((self.W, self.H))
     self.recorder = Recorder(self)
+    self.patch_bay = PatchBay(self)
+
+    # Level Config
+    self.level_config = LevelConfig(self)
 
     # Main Control (Left Screen) Window
     MAIN_BG = DARK_BG.lerp(BLACK,0.1)
@@ -595,14 +627,13 @@ class Game:
     left_window.add_child(self.debug_panel)
 
     # Level Window (Right Screen)
-    right_window = LevelWindow(self, top = 0, left=self.W//2, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
-    self.windows = [left_window, right_window]
+    self.level_window = LevelWindow(self, top = 0, left=self.W//2, w=self.W//2, h=self.H, bg=DARK_BG, outline_width=self.outline_width, outline_color=DARK_BG_OUTLINE)
+    self.windows = [left_window, self.level_window]
+
 
     # Pointer
     self.pointer = Pointer(self)
 
-    # Recorder
-    #self.recorder.register_listener(Listener(lambda val: setattr(right_window,'bg', DARK_BG.lerp(WHITE, val))))
 
   def draw(self):
     self.screen.fill(BLACK)
@@ -753,24 +784,44 @@ class Recorder:
       t = time.time()
       elapsed = t-self.t0
 
-      for listener in self.listeners: 
+      #for listener in self.listeners: 
+      for listener_id in self.game.patch_bay.get_listeners(self.active_signal.id):
+        listener = self.game.level_config.listener_pool[listener_id]
         listener.notify(self.game.pointer.hover_val)
 
       if elapsed >= self.T*self.i:
         self.sample()
 
-    elif self.playing: # TODO: handle all listeners for all Signals.stored signals, not just active_signal and its listeners
+    elif self.playing: 
       t = time.time()
       elapsed = t-self.playback_t0
       self.playback_progress = clamp((elapsed/self.dur),0,1)
 
-      for sig in Signal.stored.values(): # Playback all stored signals
-        if not sig.complete:
+
+      for listener_id, listener in self.game.level_config.listener_pool.items():
+        summed_signal = np.zeros(self.n_smooth_samples) 
+        n_summed = 0
+        source_signal_ids = self.game.patch_bay.get_sources(listener_id)
+        for signal_id in source_signal_ids: # TODO: sum and clamp signals (for now assume only 1 per listener is fed)
+          sig = Signal.stored.get(signal_id) # for now take the last signal in the list (again, todo: SUM THEM)
+          if not sig or not sig.complete:
+            continue
+          summed_signal += sig.smoothed # todo: DO THE SUMMING HERE
+          n_summed += 1
+        if n_summed == 0:
           continue
-        playback_index = int(self.playback_progress*(len(sig.smoothed) - 1))
-        playback_val = sig.smoothed[playback_index]
-        for listener in sig.listeners:
-          listener.notify(playback_val)
+        summed_signal = summed_signal.clip(0,1)
+        playback_index = int(self.playback_progress*(len(summed_signal) - 1))
+        playback_val = summed_signal[playback_index]
+        listener.notify(playback_val)
+
+      #for sig in Signal.stored.values(): # Playback all stored signals
+      #  if not sig.complete:
+      #    continue
+      #  playback_index = int(self.playback_progress*(len(sig.smoothed) - 1))
+      #  playback_val = sig.smoothed[playback_index]
+      #  for listener in sig.listeners:
+      #    listener.notify(playback_val)
 
       #playback_index = int(self.playback_progress*(len(self.smoothed) - 1))
       #self.playback_val = self.smoothed[playback_index]
@@ -781,7 +832,8 @@ class Recorder:
         self.end_playback()
 
   def register_listener(self, listener):
-    self.listeners.append(listener) # todo: switch from list to dictionary / add remove_listener method
+    self.listeners.append(listener) # todo: attach listeners to banks (ListenerButtons) not signals
+                                    # also todo: switch from list to dictionary / add remove_listener method
 
   def sample(self):
     T = self.game.pointer.hover_val
