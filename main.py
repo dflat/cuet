@@ -797,36 +797,12 @@ class Recorder:
       elapsed = t-self.playback_t0
       self.playback_progress = clamp((elapsed/self.dur),0,1)
 
-
       for listener_id, listener in self.game.level_config.listener_pool.items():
-        summed_signal = np.zeros(self.n_smooth_samples) 
-        n_summed = 0
-        source_signal_ids = self.game.patch_bay.get_sources(listener_id)
-        for signal_id in source_signal_ids: # TODO: sum and clamp signals (for now assume only 1 per listener is fed)
-          sig = Signal.stored.get(signal_id) # for now take the last signal in the list (again, todo: SUM THEM)
-          if not sig or not sig.complete:
-            continue
-          summed_signal += sig.smoothed # todo: DO THE SUMMING HERE
-          n_summed += 1
-        if n_summed == 0:
-          continue
-        summed_signal = summed_signal.clip(0,1)
-        playback_index = int(self.playback_progress*(len(summed_signal) - 1))
-        playback_val = summed_signal[playback_index]
-        listener.notify(playback_val)
-
-      #for sig in Signal.stored.values(): # Playback all stored signals
-      #  if not sig.complete:
-      #    continue
-      #  playback_index = int(self.playback_progress*(len(sig.smoothed) - 1))
-      #  playback_val = sig.smoothed[playback_index]
-      #  for listener in sig.listeners:
-      #    listener.notify(playback_val)
-
-      #playback_index = int(self.playback_progress*(len(self.smoothed) - 1))
-      #self.playback_val = self.smoothed[playback_index]
-      #for listener in self.listeners:
-      #  listener.notify(self.playback_val)
+        summed_signal = self.sum_signals(listener_id)
+        if summed_signal is not None:
+          playback_index = int(self.playback_progress*(len(summed_signal) - 1))
+          playback_val = summed_signal[playback_index]
+          listener.notify(playback_val)
 
       if elapsed >= self.dur: 
         self.end_playback()
@@ -834,6 +810,22 @@ class Recorder:
   def register_listener(self, listener):
     self.listeners.append(listener) # todo: attach listeners to banks (ListenerButtons) not signals
                                     # also todo: switch from list to dictionary / add remove_listener method
+
+  def sum_signals(self, listener_id):
+    summed_signal = np.zeros(self.n_smooth_samples) 
+    n_summed = 0
+    source_signal_ids = self.game.patch_bay.get_sources(listener_id)
+    
+    for signal_id in source_signal_ids: 
+      sig = Signal.stored.get(signal_id) 
+      if not sig or not sig.complete:
+        continue
+      summed_signal += sig.smoothed 
+      n_summed += 1
+
+    if n_summed == 0:
+      return None
+    return summed_signal.clip(0,1)
 
   def sample(self):
     T = self.game.pointer.hover_val
