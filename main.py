@@ -80,10 +80,6 @@ class Window(Rect):
     self.game = game
     self.children = []
 
-  @property
-  def bot(self):
-    return self.top + self.h - 1
-  
   def draw(self, surf):
     self.surf.fill(self.bg)
     self.outline()
@@ -171,8 +167,11 @@ class LevelWindow(Window):
     super().__init__(*args, **kwargs)
     self.sprites = []
     ball_color = RED.lerp(DARK_BG, .5)
-    self.ball = Ball(self, fulcrum=(self.w//2, self.h), arm_radius=self.w//3, ball_radius=12, phase=0.5, color=ball_color, group=self.sprites)
-    self.game.recorder.register_listener(Listener(lambda val: self.ball.set_pos(val)))
+    self.ball = Ball(self, fulcrum=(self.w//2, self.h), arm_radius=self.w//4, ball_radius=12, phase=0.5, color=ball_color, group=self.sprites)
+
+  def update(self, dt):
+    for sprite in self.sprites:
+      sprite.update(dt)
 
   def draw(self, surf):
     self.surf.fill(self.bg)
@@ -272,9 +271,7 @@ class Button(Rect):
   def draw(self, surf):
     self.surf.fill(self.bg)
     self.outline()
-
     pygame.draw.circle(surf, WHITE, (self.left,self.top), 1)
-
     surf.blit(self.surf, (self.left, self.top))
 
 
@@ -284,7 +281,7 @@ class Button(Rect):
     self.collide(self.parent.game.pointer.xy)
     if self.hovered:
       self.bg = self.bg_hover
-      self.parent.game.pointer.enter_button()
+      self.parent.game.pointer.enter_button(self)
 
   def collide(self, point):
     x, y = point - (self.parent.left, self.parent.top)
@@ -319,6 +316,35 @@ class ControlPanelButton(Button):
 
 class ListenerPanelButton(Button):
   group = []
+  port_color = DARK_BG.lerp(BLACK, .3)
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.n_ports = 4
+    self.ports = [None]*self.n_ports
+    self.port_width = 5 # get from cable class (todo)
+    self.spacing = get_spacing(self.h, s=self.port_width, n=len(self.ports))
+    self.port_locations = list(zip([self.absleft-1]*self.n_ports,
+                                    self.abstop + self.port_width/2 + np.array(self.spacing)))
+    print(self.abstop)
+    print('parent:', self.parent.abstop, self.parent.top)
+    print(self.port_locations)
+
+  def first_availible_port(self, signal_bank_id):
+    for i, port in enumerate(self.ports):
+      if port is None:
+        self.ports[i] = signal_bank_id
+        return self.port_locations[i]
+    return None
+
+  def draw(self, surf):
+    # surf is parent window (ListenerPanelWindow)
+    self.surf.fill(self.bg)
+    self.outline()
+    for port_y_offset in self.spacing:
+      pos = (0, port_y_offset+2)
+      pygame.draw.circle(self.surf, self.port_color.lerp(WHITE,.05), pos, 4)
+      pygame.draw.circle(self.surf, self.port_color, pos, 3)
+    surf.blit(self.surf, (self.left, self.top))
 
 ### end Button classes ###
 
@@ -331,7 +357,7 @@ class Cable:
   MAX_LEN = 1000
   MIN_LEN = 50
   COLOR_INDEX = 0
-  MAX_COUNT = 5
+  MAX_COUNT = 16#5
   active_cable = None
   def __init__(self, game, source=None, dest=None, color=None):
     Cable.group.append(self)
@@ -428,12 +454,16 @@ class Cable:
 
     # check if cursor is over a listener button
     selected_listener_bank = None
-    for listener_button in ListenerPanelButton.group:
-      if listener_button.hovered:
-        selected_listener_bank = listener_button
-        self.endpos[0] = listener_button.absleft
+    for listener_bank in ListenerPanelButton.group:
+      if listener_bank.hovered:
+        selected_listener_bank = listener_bank
+        self.endpos = selected_listener_bank.first_availible_port(self.selected_signal_bank.id)
+        if self.endpos is None: # no availible ports
+          return self.drop()
+        #self.endpos[0] = listener_bank.absleft
+        #self.endpos[1] = port_index
         self.update_path()
-        # todo -> add to listener
+        # todo -> add to listener (or is this handled by patch bay without any extra work?)
         self.game.patch_bay.connect(self.selected_signal_bank.id, selected_listener_bank.id)
         break
     if not selected_listener_bank:
@@ -441,6 +471,9 @@ class Cable:
 
     self.dragging = False
     self.plugged = True
+
+  def unplug(self):
+    pass
 
   def drop(self):
     Cable.dropped.append(self)
@@ -457,6 +490,8 @@ class LevelConfig:
     self.listener_pool = { 
               0: Listener(lambda val: setattr(self.game.level_window,'bg', DARK_BG.lerp(WHITE, val))),
               1: Listener(lambda val: self.game.level_window.ball.set_pos(val)),
+              2: Listener(lambda val: self.game.level_window.ball.set_radius(val)),
+              3: Listener(lambda val: self.game.level_window.ball.set_arm_radius(val)),
             }
 
 class PatchBay:
@@ -496,6 +531,7 @@ class Pointer:
     self.hovering = False
 
     self.over_button = False
+    self.hovered_object = None
 
   def in_hover_zone(self):
     x, y = self.xy
@@ -507,14 +543,17 @@ class Pointer:
     self.hovering = True
     return True
 
-  def enter_button(self):
+  def enter_button(self, button):
     self.over_button = True
+    self.hovered_object = button
 
   def exit_button(self):
     self.over_button = False
+    self.hovered_object = None
 
   def report(self):
     self.xy = np.array(pygame.mouse.get_pos())
+    self.game.debug_panel.print(self.xy)
     if self.xy[0] > self.game.W/2:
       pygame.mouse.set_cursor(Pointer.hand)
     elif self.in_hover_zone():
@@ -539,9 +578,8 @@ def lerp(t, a, b):
 def get_spacing(total, s, n):
   gaps = n+1
   filled = n*s
-  empty = total - filled
+  empty = max(0,total - filled)
   gap_size = empty / gaps 
-  first = gap_size
   return [gap_size + (gap_size + s)*i for i in range(n)]
 
 ### end utility funcs ###
@@ -554,16 +592,25 @@ class Ball:
     self.window = window
     self.fulcrum = np.array(fulcrum)
     self.arm = arm_radius
+    self._arm = arm_radius
     self.r = ball_radius
+    self._r = ball_radius
     self.set_pos(phase)
     self.color = color
 
   def set_pos(self, t): # t = [0,1] => [pi,0]
     self.phi = lerp(t, math.pi, 0) #t*math.pi - math.pi/2
-    self.pos = self.fulcrum + self.arm*np.array((math.cos(self.phi), -math.sin(self.phi))) # negative y-component to flip y-axis
+    #self.pos = self.fulcrum + self.arm*np.array((math.cos(self.phi), -math.sin(self.phi))) # negative y-component to flip y-axis
+
+  def set_radius(self, t): # t = [0,1] => [4,12]
+    self.r = lerp(t, self._r, self._r*3)
+
+  def set_arm_radius(self, t): # t = [0,1] => [4,12]
+    self.arm = lerp(t, self._arm, self.window.w/2)
+    #self.pos = self.fulcrum + self.arm*np.array((math.cos(self.phi), -math.sin(self.phi))) # move this to update method below
 
   def update(self, dt):
-    pass
+    self.pos = self.fulcrum + self.arm*np.array((math.cos(self.phi), -math.sin(self.phi))) 
 
   def draw(self, surf):
     pygame.draw.circle(surf, self.color.lerp(self.window.bg, .4), self.pos, self.r)
@@ -618,7 +665,7 @@ class Game:
     listener_panel_w = left_window.w - self.hover_zone.right - 2*PAD
     listener_panel_h = left_window.h - 2*PAD
     self.listener_panel = ListenerPanelWindow(self, top = PAD, left = self.hover_zone.right + PAD, w=listener_panel_w, h=listener_panel_h,
-                                  bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE ) 
+                                  bg=MID, outline_width=1, outline_color=DARK_BG_OUTLINE,parent=left_window )  # TESTing parent
     left_window.add_child(self.listener_panel)
 
     # Debug Window
@@ -644,6 +691,8 @@ class Game:
     for cable in Cable.group:
       cable.draw(self.screen)
 
+    #pygame.draw.line(self.screen, RED, (590, 74), (590,84), 1)
+    #pygame.draw.line(self.screen, RED, (600, 74), (600,84), 1)
     pygame.display.flip()
 
   def update(self):
@@ -654,7 +703,7 @@ class Game:
         self.quit()
 
       elif event.type == pygame.MOUSEBUTTONDOWN:
-        if self.pointer.over_button:
+        if self.pointer.over_button and isinstance(self.pointer.hovered_object, ControlPanelButton):
           Cable(self)
       elif event.type == pygame.MOUSEBUTTONUP:
         if Cable.active_cable:
@@ -675,8 +724,6 @@ class Game:
             ControlPanelButton.group[2].click()
           elif event.key == pygame.K_4:
             ControlPanelButton.group[3].click()
-          elif event.key == pygame.K_6:
-            self.recorder.register_listener(Listener(lambda val: setattr(self.windows[1],'bg', DARK_BG.lerp(WHITE, val))))
 
 
 
@@ -697,6 +744,8 @@ class Game:
     Cable.dropped = []
 
     self.debug_panel.update(dt)
+
+    self.level_window.update(dt) 
 
   def run(self):
     self.dt = 1/self.FPS
