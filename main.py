@@ -359,6 +359,7 @@ class Cable:
   COLOR_INDEX = 0
   MAX_COUNT = 16#5
   active_cable = None
+  closest_cable = None
   def __init__(self, game, source=None, dest=None, color=None):
     Cable.group.append(self)
     if len(Cable.group) > Cable.MAX_COUNT:
@@ -381,9 +382,24 @@ class Cable:
     self.normals = np.c_[-np.sin(angles), np.cos(angles)]
     self._normals = self.normals.copy()
     self.y = self.poly(self.x)
+    #self.hovered = False
 
     self.start() # start at creation time
     #self.y = 3*np.power(self.x, 2) - 2*np.power(self.x, 3)
+
+  @classmethod
+  def update_closest(cls, pointer):
+    cls.closest_cable = None
+    closest_dist = 1e10
+    THRESH = 10
+    for cable in Cable.group:
+      if cable.plugged:
+        distance = np.linalg.norm(pointer.xy - cable.endpos) # note: waste of cycles w/norm here..
+        if distance < THRESH and distance < closest_dist:
+          cls.closest_cable = cable
+          closest_dist = distance
+    #if cls.closest_cable:
+    #  closest_cable.hovered = True
 
   @classmethod
   def choose_color(cls):
@@ -421,6 +437,9 @@ class Cable:
       #pygame.draw.line(surf, top_color, self.samps[i-1] + normal_offset_a, self.samps[i] + normal_offset_b, 1)
       pygame.draw.line(surf, top_color, self.samps[i-1] - (0, offset), self.samps[i] - (0, offset), 3)
       pygame.draw.line(surf, bot_color, self.samps[i-1] + (0, offset), self.samps[i] + (0, offset))
+
+    if self is Cable.closest_cable:
+      pygame.draw.circle(surf, bot_color, self.endpos, 8)
 
 
 
@@ -480,6 +499,7 @@ class Cable:
     Cable.active_cable = None
     self.dragging = False
     self.endpos = None
+    self.__class__.COLOR_INDEX -= 1
     #self.samps = []
 
 
@@ -527,7 +547,7 @@ class Pointer:
     self.hover_zone_right = self.game.hover_zone.left + self.game.hover_zone.w
     self.hover_zone_top = self.game.hover_zone.top
     self.hover_zone_bot = self.game.hover_zone.top + self.game.hover_zone.h
-    self.hover_val = None # 0?
+    self.hover_val = 0
     self.hovering = False
 
     self.over_button = False
@@ -698,6 +718,7 @@ class Game:
   def update(self):
     self.frame += 1
     dt = self.dt
+
     for event in pygame.event.get():
       if event.type == QUIT:
         self.quit()
@@ -742,6 +763,8 @@ class Game:
     for cable in Cable.dropped:
       Cable.group.remove(cable)
     Cable.dropped = []
+
+    Cable.update_closest(self.pointer)
 
     self.debug_panel.update(dt)
 
@@ -836,10 +859,6 @@ class Recorder:
     if self.recording:
       t = time.time()
       elapsed = t-self.t0
-
-      #for listener_id in self.game.patch_bay.get_listeners(self.active_signal.id):
-      #  listener = self.game.level_config.listener_pool[listener_id]
-      #  listener.notify(self.game.pointer.hover_val)
 
       if elapsed >= self.T*self.i:
         self.sample()
