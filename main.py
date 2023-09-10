@@ -829,14 +829,17 @@ class Recorder:
     self.active_signal = signal #Signal.stored.get(id, Signal(id=id))
   
   def update(self, dt): # dt in ms
+    for listener_id in self.game.patch_bay.get_listeners(self.active_signal.id):
+      listener = self.game.level_config.listener_pool[listener_id]
+      listener.notify(self.game.pointer.hover_val)
+
     if self.recording:
       t = time.time()
       elapsed = t-self.t0
 
-      #for listener in self.listeners: 
-      for listener_id in self.game.patch_bay.get_listeners(self.active_signal.id):
-        listener = self.game.level_config.listener_pool[listener_id]
-        listener.notify(self.game.pointer.hover_val)
+      #for listener_id in self.game.patch_bay.get_listeners(self.active_signal.id):
+      #  listener = self.game.level_config.listener_pool[listener_id]
+      #  listener.notify(self.game.pointer.hover_val)
 
       if elapsed >= self.T*self.i:
         self.sample()
