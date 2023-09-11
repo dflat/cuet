@@ -153,7 +153,7 @@ class HoverWindow(Window):
 
   def draw(self, surf):
     super().draw(surf)
-    if game.pointer.hovering:
+    if game.pointer.over_hover_window:
       self.draw_cursor(surf, game.pointer.xy[0])
 
   def draw_cursor(self, surf, x):
@@ -329,12 +329,18 @@ class ListenerPanelButton(Button):
     print('parent:', self.parent.abstop, self.parent.top)
     print(self.port_locations)
 
+  def has_availible_port(self):
+    return sum(1 for p in self.ports if p is None)
+
   def first_availible_port(self, signal_bank_id):
-    for i, port in enumerate(self.ports):
+    for port_index, port in enumerate(self.ports):
       if port is None:
-        self.ports[i] = signal_bank_id
-        return self.port_locations[i]
+        self.ports[port_index] = signal_bank_id
+        return self.port_locations[port_index], port_index
     return None
+
+  def release_port(self, port_index):
+    self.ports[port_index] = None
 
   def draw(self, surf):
     # surf is parent window (ListenerPanelWindow)
@@ -465,34 +471,39 @@ class Cable:
         self.startpos[0] = self.selected_signal_bank.absleft + self.selected_signal_bank.w
 
 
-  def plug(self):
+
+  def release(self):
+    # results in either plug or drop
     self.endpos = self.game.pointer.xy
     u,v = self.endpos - self.startpos
     if np.linalg.norm((u,v)) < Cable.MIN_LEN:
       return self.drop()
 
     # check if cursor is over a listener button
-    selected_listener_bank = None
-    for listener_bank in ListenerPanelButton.group:
-      if listener_bank.hovered:
-        selected_listener_bank = listener_bank
-        self.endpos = selected_listener_bank.first_availible_port(self.selected_signal_bank.id)
-        if self.endpos is None: # no availible ports
-          return self.drop()
-        #self.endpos[0] = listener_bank.absleft
-        #self.endpos[1] = port_index
-        self.update_path()
-        # todo -> add to listener (or is this handled by patch bay without any extra work?)
-        self.game.patch_bay.connect(self.selected_signal_bank.id, selected_listener_bank.id)
-        break
-    if not selected_listener_bank:
-      return self.drop()
+    hovered_object = self.game.pointer.hovered_object
+    if isinstance(hovered_object, ListenerPanelButton) and hovered_object.has_availible_port():
+      return self.plug(listener_bank=hovered_object)
 
-    self.dragging = False
+    # no available ports or cable was realeased while not over a port
+    return self.drop()
+
+  def plug(self, listener_bank):
+    self.endpos, self.listener_bank_port_index = listener_bank.first_availible_port(self.selected_signal_bank.id)
+    self.update_path() # maybe unnecessary
+    self.game.patch_bay.connect(self.selected_signal_bank.id, listener_bank.id)
+    self.listener_bank = listener_bank
+
     self.plugged = True
+    self.dragging = False
+    Cable.active_cable = None
 
   def unplug(self):
-    pass
+    self.game.patch_bay.disconnect(self.selected_signal_bank.id, self.listener_bank.id)
+    self.listener_bank.release_port(self.listener_bank_port_index)
+
+    self.plugged = False
+    self.dragging = True
+    Cable.active_cable = self
 
   def drop(self):
     Cable.dropped.append(self)
@@ -534,6 +545,7 @@ class PatchBay:
 ### end Level Config ###
 
 ### end UI Elements ###
+
 class Pointer:
   hover = pygame.cursors.Cursor(pygame.SYSTEM_CURSOR_CROSSHAIR)
   normal = pygame.cursors.Cursor(pygame.SYSTEM_CURSOR_ARROW)
@@ -548,41 +560,53 @@ class Pointer:
     self.hover_zone_top = self.game.hover_zone.top
     self.hover_zone_bot = self.game.hover_zone.top + self.game.hover_zone.h
     self.hover_val = 0
-    self.hovering = False
 
+    self.over_hover_window = False
     self.over_button = False
     self.hovered_object = None
+
+  def update(self, dt):
+    self.reset_state()
+    self.report()
+
+    if self.xy[0] > self.game.W/2:
+      pygame.mouse.set_cursor(Pointer.hand)
+
+    elif self.in_hover_zone():
+      pygame.mouse.set_cursor(Pointer.hover)
+      self.report_value()
+      self.hovered_object = self.game.hover_zone
+
+    elif self.over_button:
+      pygame.mouse.set_cursor(Pointer.hand)
+
+    else:
+      pygame.mouse.set_cursor(Pointer.normal)
+
+  def report_value(self):
+      T = self.xy[0] - self.hover_zone_left
+      self.hover_val = rescale(T, mn=0, mx=self.game.hover_zone.w, a=0, b=1)
+      self.over_hover_window = True
 
   def in_hover_zone(self):
     x, y = self.xy
     if y < self.hover_zone_top or y > self.hover_zone_bot or x < self.hover_zone_left or x > self.hover_zone_right:
-      self.hovering = False
       return False
-    T = x - self.hover_zone_left
-    self.hover_val = rescale(T, mn=0, mx=self.game.hover_zone.w, a=0, b=1)
-    self.hovering = True
     return True
 
   def enter_button(self, button):
     self.over_button = True
     self.hovered_object = button
 
-  def exit_button(self):
+  def reset_state(self):
     self.over_button = False
     self.hovered_object = None
+    self.over_hover_window = False
 
   def report(self):
     self.xy = np.array(pygame.mouse.get_pos())
     self.game.debug_panel.print(self.xy)
-    if self.xy[0] > self.game.W/2:
-      pygame.mouse.set_cursor(Pointer.hand)
-    elif self.in_hover_zone():
-      pygame.mouse.set_cursor(Pointer.hover)
-    elif self.over_button:
-      pygame.mouse.set_cursor(Pointer.hand)
-    else:
-      pygame.mouse.set_cursor(Pointer.normal)
-    self.exit_button()
+
 
 ### utility funcs ###
 
@@ -724,11 +748,14 @@ class Game:
         self.quit()
 
       elif event.type == pygame.MOUSEBUTTONDOWN:
-        if self.pointer.over_button and isinstance(self.pointer.hovered_object, ControlPanelButton):
+        if isinstance(self.pointer.hovered_object, ControlPanelButton):
           Cable(self)
+        elif Cable.closest_cable:
+          Cable.closest_cable.unplug()
+
       elif event.type == pygame.MOUSEBUTTONUP:
         if Cable.active_cable:
-           Cable.active_cable.plug()
+           Cable.active_cable.release()
 
       elif event.type == pygame.KEYDOWN:
           if event.key == pygame.K_q:
@@ -748,7 +775,7 @@ class Game:
 
 
 
-    self.pointer.report()
+    self.pointer.update(dt)
     self.recorder.update(dt)
 
     for button in ControlPanelButton.group:
@@ -776,6 +803,7 @@ class Game:
       self.update()
       self.draw()
       self.dt = self.clock.tick(self.FPS)
+      #self.debug_panel.print(f'FPS: {1000/self.dt:.2f}')
 
   def quit(self):
         pygame.quit()
