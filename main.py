@@ -482,7 +482,8 @@ class Cable:
     # check if cursor is over a listener button
     hovered_object = self.game.pointer.hovered_object
     if isinstance(hovered_object, ListenerPanelButton) and hovered_object.has_availible_port():
-      return self.plug(listener_bank=hovered_object)
+      if not self.game.patch_bay.connected(self.selected_signal_bank.id, hovered_object.id): # avoid duplicate connections
+        return self.plug(listener_bank=hovered_object)
 
     # no available ports or cable was realeased while not over a port
     return self.drop()
@@ -535,6 +536,9 @@ class PatchBay:
 
   def disconnect(self, source, dest):
     self.graph[source][dest] = 0
+
+  def connected(self, source, dest):
+    return self.graph[source][dest] == 1
 
   def get_listeners(self, source_id):
     return self.graph[source_id,:].nonzero()[0]
@@ -756,6 +760,9 @@ class Game:
       elif event.type == pygame.MOUSEBUTTONUP:
         if Cable.active_cable:
            Cable.active_cable.release()
+        if isinstance(self.pointer.hovered_object, ControlPanelButton):
+          self.pointer.hovered_object.click()
+
 
       elif event.type == pygame.KEYDOWN:
           if event.key == pygame.K_q:
