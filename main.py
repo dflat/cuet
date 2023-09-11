@@ -378,7 +378,7 @@ class Cable:
     self.plugged = False
     self.startpos = np.array((0,0))
     self.endpos = None
-    self.color = color or Cable.choose_color()
+    self.color = Cable.COLORS[source.id]#color or Cable.choose_color()
     self.path = []
     self.samps = []
     self.x = np.linspace(0,1,Cable.n_path_samples)
@@ -445,7 +445,8 @@ class Cable:
       pygame.draw.line(surf, bot_color, self.samps[i-1] + (0, offset), self.samps[i] + (0, offset))
 
     if self is Cable.closest_cable:
-      pygame.draw.circle(surf, bot_color, self.endpos, 8)
+      pygame.draw.circle(surf, top_color, self.endpos, 8)
+      pygame.draw.circle(surf, bot_color, self.endpos, 6)
 
 
 
@@ -753,7 +754,7 @@ class Game:
 
       elif event.type == pygame.MOUSEBUTTONDOWN:
         if isinstance(self.pointer.hovered_object, ControlPanelButton):
-          Cable(self)
+          Cable(self, source=self.pointer.hovered_object)
         elif Cable.closest_cable:
           Cable.closest_cable.unplug()
 
