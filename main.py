@@ -300,6 +300,10 @@ class Button(Rect):
 class ControlPanelButton(Button):
   group = []
   punched = None
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.playback_value = 0
+
   def update(self,dt):
     super().update(dt)
     if ControlPanelButton.punched == self.id:
@@ -308,6 +312,16 @@ class ControlPanelButton(Button):
     else:
       self.outline_width = self._outline_width
       self.outline_color = self._outline_color
+
+  def draw(self, surf):
+    # surf is parent window (ControlPanelWindow)
+    self.surf.fill(self.bg)
+    w = self.w
+    h = (self.h - self.outline_width*2) * self.playback_value
+    rect = pygame.Rect(self.left, self.top,20,20)#self.bot - h - self.outline_width,w,h)# w, h)
+    pygame.draw.rect(self.surf, WHITE, rect)
+    self.outline()
+    surf.blit(self.surf, (self.left, self.top))
 
   def click(self):
     print('control panel button', self.id)
@@ -431,18 +445,12 @@ class Cable:
     return v/np.linalg.norm(v)
 
   def draw(self, surf):
-    for i in range(1, Cable.n_path_samples):
-      pygame.draw.line(surf, self.color, self.samps[i-1], self.samps[i], Cable.width)
-      offset = Cable.width//2
-      top_color = self.color.lerp(WHITE, 0.5)
-      bot_color = self.color.lerp(BLACK, 0.3)
-      #r = Cable.width/2
-      #normal_offset_a = self.normalize(self.normals[i-1])*r
-      #normal_offset_b = self.normalize(self.normals[i])*r
-      #pygame.draw.line(surf, top_color, self.samps[i-1] - normal_offset_a, self.samps[i] - normal_offset_b, 3)
-      #pygame.draw.line(surf, top_color, self.samps[i-1] + normal_offset_a, self.samps[i] + normal_offset_b, 1)
-      pygame.draw.line(surf, top_color, self.samps[i-1] - (0, offset), self.samps[i] - (0, offset), 3)
-      pygame.draw.line(surf, bot_color, self.samps[i-1] + (0, offset), self.samps[i] + (0, offset))
+    top_color = self.color.lerp(WHITE, 0.5)
+    bot_color = self.color.lerp(BLACK, 0.3)
+    offset = Cable.width//2
+    pygame.draw.lines(surf, self.color, False, self.samps, Cable.width)
+    pygame.draw.lines(surf, top_color, False, self.samps - (0,offset), 3)
+    pygame.draw.lines(surf, bot_color, False, self.samps + (0,offset), 1)
 
     if self is Cable.closest_cable:
       pygame.draw.circle(surf, top_color, self.endpos, 8)
@@ -675,6 +683,7 @@ class Game:
     self.W = 640*2
     self.H = 480
     self.outline_width = 3
+    self.BG_COLOR  = BLACK
 
     self.FPS = 60.0
     self.clock = pygame.time.Clock()
@@ -732,7 +741,7 @@ class Game:
 
 
   def draw(self):
-    self.screen.fill(BLACK)
+    self.screen.fill(self.BG_COLOR)
 
     for win in self.windows:
       win.draw(self.screen)
@@ -807,9 +816,22 @@ class Game:
 
   def run(self):
     self.dt = 1/self.FPS
+    goal = self.dt #spf
+    self.debug_panel.bg = WHITE
+    thresh = 10/1000
+    highest = []
     while True:
+      self.debug_panel.bg = WHITE
+      start = time.time()
       self.update()
       self.draw()
+      elapsed = time.time() - start
+      highest.append(elapsed*1000)
+      self.debug_panel.print(f'frame time: {elapsed*1000:.1f} ms, FPS: {1/elapsed:.0f}')
+      if self.frame % 60 == 0:
+        print(f'worst: {max(highest)}')
+        highest = []
+      #time.sleep(max(0,elapsed))
       self.dt = self.clock.tick(self.FPS)
       #self.debug_panel.print(f'FPS: {1000/self.dt:.2f}')
 
@@ -903,12 +925,12 @@ class Recorder:
       t = time.time()
       elapsed = t-self.playback_t0
       self.playback_progress = clamp((elapsed/self.dur),0,1)
+      self.playback_index = int(self.playback_progress*(self.n_smooth_samples - 1))
 
       for listener_id, listener in self.game.level_config.listener_pool.items():
-        summed_signal = self.sum_signals(listener_id)
+        summed_signal = self.sum_signals(listener_id) #todo:sum one sample at a time to save cpu?
         if summed_signal is not None:
-          playback_index = int(self.playback_progress*(len(summed_signal) - 1))
-          playback_val = summed_signal[playback_index]
+          playback_val = summed_signal[self.playback_index]
           listener.notify(playback_val)
 
       if elapsed >= self.dur: 
@@ -929,6 +951,7 @@ class Recorder:
         continue
       summed_signal += sig.smoothed 
       n_summed += 1
+      ControlPanelButton.group[signal_id].playback_value = sig.smoothed[self.playback_index] # testing 
 
     if n_summed == 0:
       return None
